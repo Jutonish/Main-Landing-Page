@@ -1,0 +1,57 @@
+image: registry.gitlab.com/psychthis/ci/images:nodejs-15.x-jest-26.6.3
+
+variables:
+  AWS_CLI_IMAGE: registry.gitlab.com/psychthis/ci/images:aws-cli-2.0.23
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 1
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+.cache: &global_cache
+  key: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+  paths:
+    - node_modules/
+
+.docker_registry_login: &docker_registry_login |
+  docker login -u $CI_REGISTRY_CUSTOM_USER -p $CI_REGISTRY_CUSTOM_TOKEN $CI_REGISTRY
+
+services:
+  - docker:19.03.14-dind
+
+workflow:
+  rules:
+    - if: $MANUAL_PIPELINE
+    - if: $CI_COMMIT_REF_NAME == "master"
+#      when: never
+    - if: $CI_MERGE_REQUEST_ID
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
+
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  cache:
+    <<: *global_cache
+  artifacts:
+    expire_in: 2 weeks
+    paths:
+      - dist
+  script:
+    - *docker_registry_login
+    - yarn install --frozen-lockfile
+    - npm run build
+    - docker build --build-arg base_url=0.0.0.0:8080 -t ${CI_REGISTRY_IMAGE}:web.dev.1.0 . -f dockerfiles/psychthis-website.dockerfile
+    - docker push ${CI_REGISTRY_IMAGE}:web.dev.1.0
+
+deploy:
+  image: $AWS_CLI_IMAGE
+  stage: deploy
+  when: manual
+  needs:
+    - build
+  script:
+    - aws-vault add default --env
+    - aws-vault exec s3-deployer -- aws s3 sync dist s3://psychthis-website-prototype --delete
